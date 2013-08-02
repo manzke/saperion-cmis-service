@@ -39,8 +39,8 @@ public class RepositoryServiceFactory extends AbstractServiceFactory {
     @Override
     public CmisService getService(CallContext context) {
         // authentication can go here
-        String user = context.getUsername();
-        String password = context.getPassword();
+//        String user = context.getUsername();
+//        String password = context.getPassword();
 
         // if the authentication fails, throw a CmisPermissionDeniedException
 
