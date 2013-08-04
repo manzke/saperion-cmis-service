@@ -117,8 +117,7 @@ public class TypeManager {
         addBasePropertyDefinitions(folderType);
         addFolderPropertyDefinitions(folderType);
 
-//not supported - don't expose it
-//        addTypeInteral(folderType);
+        addTypeInteral(folderType);
 
         // document type
         DocumentTypeDefinitionImpl documentType = new DocumentTypeDefinitionImpl();

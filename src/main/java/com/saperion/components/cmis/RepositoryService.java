@@ -12,22 +12,32 @@ import static com.saperion.components.cmis.helper.PropertiesFiller.millisToCalen
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.GregorianCalendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Set;
 
 import org.apache.chemistry.opencmis.commons.PropertyIds;
+import org.apache.chemistry.opencmis.commons.data.Acl;
+import org.apache.chemistry.opencmis.commons.data.AllowableActions;
+import org.apache.chemistry.opencmis.commons.data.BulkUpdateObjectIdAndChangeToken;
 import org.apache.chemistry.opencmis.commons.data.ContentStream;
 import org.apache.chemistry.opencmis.commons.data.ExtensionsData;
+import org.apache.chemistry.opencmis.commons.data.FailedToDeleteData;
 import org.apache.chemistry.opencmis.commons.data.ObjectData;
+import org.apache.chemistry.opencmis.commons.data.ObjectInFolderContainer;
 import org.apache.chemistry.opencmis.commons.data.ObjectInFolderData;
 import org.apache.chemistry.opencmis.commons.data.ObjectInFolderList;
+import org.apache.chemistry.opencmis.commons.data.ObjectList;
 import org.apache.chemistry.opencmis.commons.data.ObjectParentData;
 import org.apache.chemistry.opencmis.commons.data.Properties;
+import org.apache.chemistry.opencmis.commons.data.RenditionData;
 import org.apache.chemistry.opencmis.commons.data.RepositoryInfo;
 import org.apache.chemistry.opencmis.commons.definitions.TypeDefinition;
 import org.apache.chemistry.opencmis.commons.definitions.TypeDefinitionList;
+import org.apache.chemistry.opencmis.commons.enums.AclPropagation;
+import org.apache.chemistry.opencmis.commons.enums.Action;
 import org.apache.chemistry.opencmis.commons.enums.BaseTypeId;
 import org.apache.chemistry.opencmis.commons.enums.CapabilityAcl;
 import org.apache.chemistry.opencmis.commons.enums.CapabilityChanges;
@@ -36,13 +46,18 @@ import org.apache.chemistry.opencmis.commons.enums.CapabilityJoin;
 import org.apache.chemistry.opencmis.commons.enums.CapabilityQuery;
 import org.apache.chemistry.opencmis.commons.enums.CapabilityRenditions;
 import org.apache.chemistry.opencmis.commons.enums.IncludeRelationships;
+import org.apache.chemistry.opencmis.commons.enums.RelationshipDirection;
+import org.apache.chemistry.opencmis.commons.enums.UnfileObject;
+import org.apache.chemistry.opencmis.commons.enums.VersioningState;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisBaseException;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisConstraintException;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisInvalidArgumentException;
+import org.apache.chemistry.opencmis.commons.exceptions.CmisNotSupportedException;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisObjectNotFoundException;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisPermissionDeniedException;
 import org.apache.chemistry.opencmis.commons.exceptions.CmisRuntimeException;
 import org.apache.chemistry.opencmis.commons.impl.MimeTypes;
+import org.apache.chemistry.opencmis.commons.impl.dataobjects.AllowableActionsImpl;
 import org.apache.chemistry.opencmis.commons.impl.dataobjects.ContentStreamImpl;
 import org.apache.chemistry.opencmis.commons.impl.dataobjects.ObjectDataImpl;
 import org.apache.chemistry.opencmis.commons.impl.dataobjects.ObjectInFolderDataImpl;
@@ -54,6 +69,9 @@ import org.apache.chemistry.opencmis.commons.impl.server.AbstractCmisService;
 import org.apache.chemistry.opencmis.commons.impl.server.ObjectInfoImpl;
 import org.apache.chemistry.opencmis.commons.server.CallContext;
 import org.apache.chemistry.opencmis.commons.server.ObjectInfoHandler;
+import org.apache.chemistry.opencmis.commons.spi.Holder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
@@ -61,12 +79,13 @@ import com.saperion.components.cmis.helper.TypeManager;
 import com.saperion.connector.SaClassicConnector;
 import com.saperion.connector.authentication.Credentials;
 import com.saperion.connector.authentication.LicenseType;
-import com.saperion.connector.authentication.Session;
 import com.saperion.connector.authentication.keys.UsernamePasswordKey;
 import com.saperion.connector.pool.ConnectionPoolUtil;
 import com.saperion.connector.pool.PooledSession;
 import com.saperion.exception.SaAuthenticationException;
 import com.saperion.exception.SaBasicException;
+import com.saperion.exception.SaSystemException;
+import com.saperion.intf.SaDocAccessData;
 import com.saperion.intf.SaDocInfo;
 import com.saperion.intf.SaDocInfo.ElementInfo;
 import com.saperion.intf.SaDocumentInfo;
@@ -77,6 +96,8 @@ import com.saperion.rmi.SaQueryInfo;
  */
 public class RepositoryService extends AbstractCmisService {
 
+	private static final String REPOSITORY = "cmis";
+
 	public static final String ROOT_ID = "$$$ROOT$$$";
 
 	private CallContext context;
@@ -86,11 +107,15 @@ public class RepositoryService extends AbstractCmisService {
 	private Credentials credentials;
 
 	private ConnectionPoolUtil pool;
-	
+
 	private TypeManager types = new TypeManager();
+
+	private static final Logger LOG = LoggerFactory
+			.getLogger(RepositoryService.class);
 
 	public RepositoryService(CallContext context, ConnectionPoolUtil pool) {
 		super();
+		LOG.info("RepositoryService created.");
 		this.context = context;
 		this.pool = pool;
 		this.credentials = new UsernamePasswordKey(context.getUsername(),
@@ -109,9 +134,8 @@ public class RepositoryService extends AbstractCmisService {
 	}
 
 	public void connect() {
-		Session session = null;
 		try {
-			session = pool.borrowObject(credentials);
+			session = (PooledSession) pool.borrowObject(credentials);
 			if (session == null) {
 				throw new CmisPermissionDeniedException(
 						"User couldn't be logged in.");
@@ -124,6 +148,7 @@ public class RepositoryService extends AbstractCmisService {
 
 	@Override
 	public void close() {
+		LOG.info("close! session? " + (session != null));
 		if (session != null) {
 			try {
 				pool.returnObject(credentials, session);
@@ -142,10 +167,11 @@ public class RepositoryService extends AbstractCmisService {
 		// very basic repository info set up
 		RepositoryInfoImpl repositoryInfo = new RepositoryInfoImpl();
 
-		repositoryInfo.setId("examplev7");
-		repositoryInfo.setName("examplev7");
+		repositoryInfo.setId(REPOSITORY);
+		repositoryInfo.setName(REPOSITORY);
 		repositoryInfo
-				.setDescription("This is the repository representing the example v7");
+				.setDescription("This is the repository representing the "
+						+ REPOSITORY);
 
 		repositoryInfo.setCmisVersionSupported("1.1");
 
@@ -182,15 +208,16 @@ public class RepositoryService extends AbstractCmisService {
 			String typeId, Boolean includePropertyDefinitions,
 			BigInteger maxItems, BigInteger skipCount, ExtensionsData extension) {
 		connect();
-		
-		return types.getTypesChildren(context, typeId, includePropertyDefinitions, maxItems, skipCount);
+
+		return types.getTypesChildren(context, typeId,
+				includePropertyDefinitions, maxItems, skipCount);
 	}
 
 	@Override
 	public TypeDefinition getTypeDefinition(String repositoryId, String typeId,
 			ExtensionsData extension) {
 		connect();
-		
+
 		return types.getTypeDefinition(context, typeId);
 	}
 
@@ -198,6 +225,9 @@ public class RepositoryService extends AbstractCmisService {
 	public ContentStream getContentStream(String repositoryId, String objectId,
 			String streamId, BigInteger offset, BigInteger length,
 			ExtensionsData extension) {
+		if ((objectId == null) || objectId.isEmpty()) {
+			throw new CmisInvalidArgumentException("Object Id must be set.");
+		}
 		if ((offset != null) || (length != null)) {
 			throw new CmisInvalidArgumentException(
 					"Offset and Length are not supported!"); // they are but not
@@ -205,22 +235,17 @@ public class RepositoryService extends AbstractCmisService {
 																// in the poc ;)
 		}
 
-		// check id
-		if ((objectId == null)) {
-			throw new CmisInvalidArgumentException("Object Id must be set.");
-		}
 		// after sanity create connection
 		connect();
 		SaClassicConnector connector = session.connection();
 
 		HashMap<String, Object> params = Maps.newHashMapWithExpectedSize(2);
-		params.put("repository", repositoryId);
 		params.put("objectid", objectId);
 
 		List<SaDocumentInfo> result;
 		try {
-			result = connector.searchHQL(new SaQueryInfo(
-					"from :repository r where r.SYSROWID = :objectid", params));
+			result = connector.searchHQL(new SaQueryInfo("from " + REPOSITORY
+					+ " r where r.SYSROWID = :objectid", params));
 		} catch (SaAuthenticationException e) {
 			e.printStackTrace();
 			throw new CmisPermissionDeniedException(e.getMessage());
@@ -251,7 +276,7 @@ public class RepositoryService extends AbstractCmisService {
 			throw new CmisConstraintException("Document has no content!");
 		}
 
-		ElementInfo element = contentInfos.getElementInfo(0);
+		ElementInfo element = contentInfos.getElementInfo(1);
 		// compile data
 		ContentStreamImpl contentStream = new ContentStreamImpl();
 		contentStream.setFileName(element.getName());
@@ -277,6 +302,10 @@ public class RepositoryService extends AbstractCmisService {
 			IncludeRelationships includeRelationships, String renditionFilter,
 			Boolean includePathSegment, BigInteger maxItems,
 			BigInteger skipCount, ExtensionsData extension) {
+		if ((folderId == null) || folderId.isEmpty()) {
+			throw new CmisInvalidArgumentException("Object Id must be set.");
+		}
+
 		// skip and max
 		int skip = (skipCount == null ? 0 : skipCount.intValue());
 		if (skip < 0) {
@@ -298,7 +327,7 @@ public class RepositoryService extends AbstractCmisService {
 
 		// set object info of the the folder
 		if (context.isObjectInfoRequired()) {
-			//todo add info for root folder
+			// todo add info for root folder
 		}
 
 		// prepare result
@@ -306,13 +335,38 @@ public class RepositoryService extends AbstractCmisService {
 		result.setObjects(new ArrayList<ObjectInFolderData>());
 		result.setHasMoreItems(false);
 
-		HashMap<String, Object> params = Maps.newHashMapWithExpectedSize(2);
-		params.put("repository", repositoryId);
+		HashMap<String, Object> params = Maps.newHashMapWithExpectedSize(0);
 
 		List<SaDocumentInfo> items;
 		try {
-			items = connector.searchHQL(new SaQueryInfo("from :repository r",
-					params)); // add paging
+			items = connector.searchHQL(new SaQueryInfo("from " + REPOSITORY
+					+ " r", params)); // add paging
+			
+			int count = 0;
+			for (SaDocumentInfo documentInfo : items) {
+				count++;
+				
+				if (skip > 0) {
+					skip--;
+					continue;
+				}
+				
+				if (result.getObjects().size() >= max) {
+					result.setHasMoreItems(true);
+					continue;
+				}
+				
+				// build and add child object
+				ObjectInFolderDataImpl objectInFolder = new ObjectInFolderDataImpl();
+				objectInFolder.setObject(compileObjectType(context,
+						includeAllowableActions, connector, documentInfo, this));
+				
+				result.getObjects().add(objectInFolder);
+			}
+			
+			result.setNumItems(BigInteger.valueOf(count));
+			
+			return result;
 		} catch (SaAuthenticationException e) {
 			e.printStackTrace();
 			throw new CmisPermissionDeniedException(e.getMessage());
@@ -320,31 +374,6 @@ public class RepositoryService extends AbstractCmisService {
 			e.printStackTrace();
 			throw new CmisRuntimeException(e.getMessage());
 		}
-
-		int count = 0;
-		for (SaDocumentInfo documentInfo : items) {
-			count++;
-
-			if (skip > 0) {
-				skip--;
-				continue;
-			}
-
-			if (result.getObjects().size() >= max) {
-				result.setHasMoreItems(true);
-				continue;
-			}
-
-			// build and add child object
-			ObjectInFolderDataImpl objectInFolder = new ObjectInFolderDataImpl();
-			objectInFolder.setObject(compileObjectType(context, connector, documentInfo, this));
-
-			result.getObjects().add(objectInFolder);
-		}
-
-		result.setNumItems(BigInteger.valueOf(count));
-
-		return result;
 	}
 
 	@Override
@@ -353,7 +382,7 @@ public class RepositoryService extends AbstractCmisService {
 			IncludeRelationships includeRelationships, String renditionFilter,
 			Boolean includeRelativePathSegment, ExtensionsData extension) {
 		// check id
-		if ((objectId == null)) {
+		if ((objectId == null) || objectId.isEmpty()) {
 			throw new CmisInvalidArgumentException("Object Id must be set.");
 		}
 
@@ -368,21 +397,36 @@ public class RepositoryService extends AbstractCmisService {
 			Boolean includePolicyIds, Boolean includeAcl,
 			ExtensionsData extension) {
 		// check id
-		if ((objectId == null)) {
+		if ((objectId == null) || objectId.isEmpty()) {
 			throw new CmisInvalidArgumentException("Object Id must be set.");
 		}
+		if (repositoryId == null || repositoryId.isEmpty()) {
+			throw new CmisInvalidArgumentException("Repository Id must be set.");
+		}
+
+		if (objectId.equalsIgnoreCase(ROOT_ID)) {
+			return getRootFolder(this);
+		}
+
 		// after sanity create connection
 		connect();
 		SaClassicConnector connector = session.connection();
 
 		HashMap<String, Object> params = Maps.newHashMapWithExpectedSize(2);
-		params.put("repository", repositoryId);
 		params.put("objectid", objectId);
 
 		List<SaDocumentInfo> result;
 		try {
 			result = connector.searchHQL(new SaQueryInfo(
-					"from :repository r where r.SYSROWID = :objectid", params));
+					"from cmis r where r.SYSROWID = :objectid", params));
+			
+			if (result.size() != 1) {
+				throw new CmisObjectNotFoundException("Object with Id [" + objectId
+						+ "] wasn't found.");
+			}
+			
+			return compileObjectType(context, includeAllowableActions, connector,
+					result.get(0), this);
 		} catch (SaAuthenticationException e) {
 			e.printStackTrace();
 			throw new CmisPermissionDeniedException(e.getMessage());
@@ -390,25 +434,152 @@ public class RepositoryService extends AbstractCmisService {
 			e.printStackTrace();
 			throw new CmisRuntimeException(e.getMessage());
 		}
+	}
 
-		if (result.size() != 1) {
-			throw new CmisObjectNotFoundException("Object with Id [" + objectId
-					+ "] wasn't found.");
+	private ObjectData getRootFolder(ObjectInfoHandler objectInfos) {
+		ObjectDataImpl result = new ObjectDataImpl();
+		ObjectInfoImpl objectInfo = new ObjectInfoImpl();
+		
+		result.setAllowableActions(compileAllowableActions(true, true, null));
+
+		String typeId = TypeManager.FOLDER_TYPE_ID;
+		objectInfo.setBaseType(BaseTypeId.CMIS_FOLDER);
+		objectInfo.setTypeId(typeId);
+		objectInfo.setContentType(null);
+		objectInfo.setFileName(null);
+		objectInfo.setHasAcl(true);
+		objectInfo.setHasContent(false);
+		objectInfo.setVersionSeriesId(null);
+		objectInfo.setIsCurrentVersion(true);
+		objectInfo.setRelationshipSourceIds(null);
+		objectInfo.setRelationshipTargetIds(null);
+		objectInfo.setRenditionInfos(null);
+		objectInfo.setSupportsDescendants(true);
+		objectInfo.setSupportsFolderTree(true);
+		objectInfo.setSupportsPolicies(false);
+		objectInfo.setSupportsRelationships(false);
+		objectInfo.setWorkingCopyId(null);
+		objectInfo.setWorkingCopyOriginalId(null);
+
+		PropertiesImpl properties = new PropertiesImpl();
+		Set<String> filter = Sets.newHashSetWithExpectedSize(0);
+
+		addPropertyId(properties, typeId, filter, PropertyIds.OBJECT_ID,
+				ROOT_ID);
+		objectInfo.setId(ROOT_ID);
+
+		addPropertyString(properties, typeId, filter, PropertyIds.NAME, "ROOT");
+		objectInfo.setName("ROOT");
+
+		addPropertyString(properties, typeId, filter, PropertyIds.CREATED_BY,
+				"system"); // switch to SYSCREATEUSER
+		addPropertyString(properties, typeId, filter,
+				PropertyIds.LAST_MODIFIED_BY, "system");
+		objectInfo.setCreatedBy("system");
+
+		// creation and modification date
+		GregorianCalendar lastModified = millisToCalendar(System
+				.currentTimeMillis());
+		addPropertyDateTime(properties, typeId, filter,
+				PropertyIds.CREATION_DATE, lastModified); // SYSCREATEDATE
+		addPropertyDateTime(properties, typeId, filter,
+				PropertyIds.LAST_MODIFICATION_DATE, lastModified); // SYSTIMESTAMP
+		objectInfo.setCreationDate(lastModified);
+		objectInfo.setLastModificationDate(lastModified);
+
+		// change token - always null
+		addPropertyString(properties, typeId, filter, PropertyIds.CHANGE_TOKEN,
+				null);
+
+		// CMIS 1.1 properties
+		addPropertyString(properties, typeId, filter, PropertyIds.DESCRIPTION,
+				null);
+		addPropertyIdList(properties, typeId, filter,
+				PropertyIds.SECONDARY_OBJECT_TYPE_IDS, null);
+
+		// base type and type name
+		addPropertyId(properties, typeId, filter, PropertyIds.BASE_TYPE_ID,
+				BaseTypeId.CMIS_FOLDER.value());
+		addPropertyId(properties, typeId, filter, PropertyIds.OBJECT_TYPE_ID,
+				TypeManager.FOLDER_TYPE_ID);
+		addPropertyString(properties, typeId, filter, PropertyIds.PATH, "/");
+
+		// folder properties
+		addPropertyId(properties, typeId, filter, PropertyIds.PARENT_ID, null);
+		objectInfo.setHasParent(false);
+
+		addPropertyIdList(properties, typeId, filter,
+				PropertyIds.ALLOWED_CHILD_OBJECT_TYPE_IDS, null);
+
+		result.setProperties(properties);
+
+		if (context.isObjectInfoRequired()) {
+			objectInfo.setObject(result);
+			objectInfos.addObjectInfo(objectInfo);
 		}
 
-		return compileObjectType(context, connector, result.get(0), this);
+		return result;
+	}
+
+	private AllowableActions compileAllowableActions(boolean isRoot,
+			boolean isFolder, SaDocAccessData access) {
+		boolean isReadOnly = access != null && !access.isWriteable();
+
+		Set<Action> aas = EnumSet.noneOf(Action.class);
+
+		addAction(aas, Action.CAN_GET_OBJECT_PARENTS, !isRoot);
+		addAction(aas, Action.CAN_GET_PROPERTIES, true);
+		addAction(aas, Action.CAN_UPDATE_PROPERTIES, !isReadOnly);
+		addAction(aas, Action.CAN_MOVE_OBJECT, !isRoot);
+		addAction(aas, Action.CAN_DELETE_OBJECT, !isReadOnly && !isRoot);
+		addAction(aas, Action.CAN_GET_ACL, true);
+
+		if (isFolder) {
+			addAction(aas, Action.CAN_GET_DESCENDANTS, true);
+			addAction(aas, Action.CAN_GET_CHILDREN, true);
+			addAction(aas, Action.CAN_GET_FOLDER_PARENT, !isRoot);
+			addAction(aas, Action.CAN_GET_FOLDER_TREE, true);
+			addAction(aas, Action.CAN_CREATE_DOCUMENT, !isReadOnly);
+			addAction(aas, Action.CAN_CREATE_FOLDER, !isReadOnly);
+			addAction(aas, Action.CAN_DELETE_TREE, !isReadOnly);
+		} else {
+			addAction(aas, Action.CAN_GET_CONTENT_STREAM, true);
+			addAction(aas, Action.CAN_SET_CONTENT_STREAM, !isReadOnly);
+			addAction(aas, Action.CAN_DELETE_CONTENT_STREAM, !isReadOnly);
+			addAction(aas, Action.CAN_GET_ALL_VERSIONS, true);
+		}
+
+		AllowableActionsImpl result = new AllowableActionsImpl();
+		result.setAllowableActions(aas);
+
+		return result;
+	}
+
+	private static void addAction(Set<Action> aas, Action action,
+			boolean condition) {
+		if (condition) {
+			aas.add(action);
+		}
 	}
 
 	/**
 	 * Compiles an object type object from a file or folder.
+	 * @throws SaAuthenticationException 
+	 * @throws SaSystemException 
 	 */
 	private ObjectData compileObjectType(CallContext context,
-			SaClassicConnector connector, SaDocumentInfo info,
-			ObjectInfoHandler objectInfos) {
+			boolean includeAllowableActions, SaClassicConnector connector,
+			SaDocumentInfo info, ObjectInfoHandler objectInfos) throws SaSystemException, SaAuthenticationException {
 		ObjectDataImpl result = new ObjectDataImpl();
 		ObjectInfoImpl objectInfo = new ObjectInfoImpl();
 
 		result.setProperties(compileProperties(connector, info, objectInfo));
+
+		if (includeAllowableActions) {
+			result.setAllowableActions(compileAllowableActions(false, false,
+					connector.getDocumentAccessData(objectInfo
+							.getVersionSeriesId())));
+		}
 
 		if (context.isObjectInfoRequired()) {
 			objectInfo.setObject(result);
@@ -456,13 +627,17 @@ public class RepositoryService extends AbstractCmisService {
 			// id
 			String id = info.getValue("SYSROWID").getStringValue();// add null
 																	// check
-			String versionId = info.getValue("XHDOC").getStringValue();
 			addPropertyId(result, typeId, filter, PropertyIds.OBJECT_ID, id);
 			objectInfo.setId(id);
 
+			String versionId = info.getValue("XHDOC").getStringValue();
+			addPropertyId(result, typeId, filter,
+					PropertyIds.VERSION_SERIES_ID, versionId);
+			objectInfo.setVersionSeriesId(versionId);
+
 			// name
-			String name = info.getValue("EX7_NAME").getStringValue();// add null
-																		// check,
+			String name = info.getValue("NAME").getStringValue();// add null
+																	// check,
 			addPropertyString(result, typeId, filter, PropertyIds.NAME, name);
 			objectInfo.setName(name);
 
@@ -540,7 +715,7 @@ public class RepositoryService extends AbstractCmisService {
 				objectInfo.setContentType(null);
 				objectInfo.setFileName(null);
 			} else {
-				ElementInfo contentInfo = contentInfos.getElementInfo(0);
+				ElementInfo contentInfo = contentInfos.getElementInfo(1);
 				addPropertyInteger(result, typeId, filter,
 						PropertyIds.CONTENT_STREAM_LENGTH,
 						contentInfo.getSize());
@@ -558,9 +733,6 @@ public class RepositoryService extends AbstractCmisService {
 				objectInfo.setFileName(contentFilename);
 			}
 
-			addPropertyId(result, typeId, filter,
-					PropertyIds.CONTENT_STREAM_ID, null);
-
 			return result;
 		} catch (Exception e) {
 			if (e instanceof CmisBaseException) {
@@ -570,4 +742,297 @@ public class RepositoryService extends AbstractCmisService {
 		}
 	}
 
+	@Override
+	public TypeDefinition createType(String repositoryId, TypeDefinition type,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException("createType is not supported!");
+	}
+
+	@Override
+	public TypeDefinition updateType(String repositoryId, TypeDefinition type,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException("updateType is not supported!");
+	}
+
+	@Override
+	public void deleteType(String repositoryId, String typeId,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException("deleteType is not supported!");
+	}
+
+	@Override
+	public List<ObjectInFolderContainer> getDescendants(String repositoryId,
+			String folderId, BigInteger depth, String filter,
+			Boolean includeAllowableActions,
+			IncludeRelationships includeRelationships, String renditionFilter,
+			Boolean includePathSegment, ExtensionsData extension) {
+		throw new CmisNotSupportedException("getDescendants is not supported!");
+	}
+
+	@Override
+	public List<ObjectInFolderContainer> getFolderTree(String repositoryId,
+			String folderId, BigInteger depth, String filter,
+			Boolean includeAllowableActions,
+			IncludeRelationships includeRelationships, String renditionFilter,
+			Boolean includePathSegment, ExtensionsData extension) {
+		throw new CmisNotSupportedException("getFolderTree is not supported!");
+	}
+
+	@Override
+	public ObjectData getFolderParent(String repositoryId, String folderId,
+			String filter, ExtensionsData extension) {
+		throw new CmisNotSupportedException("getFolderParent is not supported!");
+	}
+
+	@Override
+	public ObjectList getCheckedOutDocs(String repositoryId, String folderId,
+			String filter, String orderBy, Boolean includeAllowableActions,
+			IncludeRelationships includeRelationships, String renditionFilter,
+			BigInteger maxItems, BigInteger skipCount, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"getCheckedOutDocs is not supported!");
+	}
+
+	@Override
+	public String createDocument(String repositoryId, Properties properties,
+			String folderId, ContentStream contentStream,
+			VersioningState versioningState, List<String> policies,
+			Acl addAces, Acl removeAces, ExtensionsData extension) {
+		throw new CmisNotSupportedException("createDocument is not supported!");
+	}
+
+	@Override
+	public String createDocumentFromSource(String repositoryId,
+			String sourceId, Properties properties, String folderId,
+			VersioningState versioningState, List<String> policies,
+			Acl addAces, Acl removeAces, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"createDocumentFromSource is not supported!");
+	}
+
+	@Override
+	public String createFolder(String repositoryId, Properties properties,
+			String folderId, List<String> policies, Acl addAces,
+			Acl removeAces, ExtensionsData extension) {
+		throw new CmisNotSupportedException("createFolder is not supported!");
+	}
+
+	@Override
+	public String createRelationship(String repositoryId,
+			Properties properties, List<String> policies, Acl addAces,
+			Acl removeAces, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"createRelationship is not supported!");
+	}
+
+	@Override
+	public String createPolicy(String repositoryId, Properties properties,
+			String folderId, List<String> policies, Acl addAces,
+			Acl removeAces, ExtensionsData extension) {
+		throw new CmisNotSupportedException("createPolicy is not supported!");
+	}
+
+	@Override
+	public String createItem(String repositoryId, Properties properties,
+			String folderId, List<String> policies, Acl addAces,
+			Acl removeAces, ExtensionsData extension) {
+		throw new CmisNotSupportedException("createItem is not supported!");
+	}
+
+	@Override
+	public List<RenditionData> getRenditions(String repositoryId,
+			String objectId, String renditionFilter, BigInteger maxItems,
+			BigInteger skipCount, ExtensionsData extension) {
+		throw new CmisNotSupportedException("getRenditions is not supported!");
+	}
+
+	@Override
+	public ObjectData getObjectByPath(String repositoryId, String path,
+			String filter, Boolean includeAllowableActions,
+			IncludeRelationships includeRelationships, String renditionFilter,
+			Boolean includePolicyIds, Boolean includeAcl,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException("getObjectByPath is not supported!");
+	}
+
+	@Override
+	public void updateProperties(String repositoryId, Holder<String> objectId,
+			Holder<String> changeToken, Properties properties,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"updateProperties is not supported!");
+	}
+
+	@Override
+	public List<BulkUpdateObjectIdAndChangeToken> bulkUpdateProperties(
+			String repositoryId,
+			List<BulkUpdateObjectIdAndChangeToken> objectIdAndChangeToken,
+			Properties properties, List<String> addSecondaryTypeIds,
+			List<String> removeSecondaryTypeIds, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"bulkUpdateProperties is not supported!");
+	}
+
+	@Override
+	public void moveObject(String repositoryId, Holder<String> objectId,
+			String targetFolderId, String sourceFolderId,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException("moveObject is not supported!");
+	}
+
+	@Override
+	public void deleteObjectOrCancelCheckOut(String repositoryId,
+			String objectId, Boolean allVersions, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"deleteObjectOrCancelCheckOut is not supported!");
+	}
+
+	@Override
+	public FailedToDeleteData deleteTree(String repositoryId, String folderId,
+			Boolean allVersions, UnfileObject unfileObjects,
+			Boolean continueOnFailure, ExtensionsData extension) {
+		throw new CmisNotSupportedException("deleteTree is not supported!");
+	}
+
+	@Override
+	public void setContentStream(String repositoryId, Holder<String> objectId,
+			Boolean overwriteFlag, Holder<String> changeToken,
+			ContentStream contentStream, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"setContentStream is not supported!");
+	}
+
+	@Override
+	public void appendContentStream(String repositoryId,
+			Holder<String> objectId, Holder<String> changeToken,
+			ContentStream contentStream, boolean isLastChunk,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"appendContentStream is not supported!");
+	}
+
+	@Override
+	public void deleteContentStream(String repositoryId,
+			Holder<String> objectId, Holder<String> changeToken,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"deleteContentStream is not supported!");
+	}
+
+	@Override
+	public void checkOut(String repositoryId, Holder<String> objectId,
+			ExtensionsData extension, Holder<Boolean> contentCopied) {
+		throw new CmisNotSupportedException("checkOut is not supported!");
+	}
+
+	@Override
+	public void cancelCheckOut(String repositoryId, String objectId,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException("cancelCheckOut is not supported!");
+	}
+
+	@Override
+	public void checkIn(String repositoryId, Holder<String> objectId,
+			Boolean major, Properties properties, ContentStream contentStream,
+			String checkinComment, List<String> policies, Acl addAces,
+			Acl removeAces, ExtensionsData extension) {
+		throw new CmisNotSupportedException("checkIn is not supported!");
+	}
+
+	@Override
+	public ObjectData getObjectOfLatestVersion(String repositoryId,
+			String objectId, String versionSeriesId, Boolean major,
+			String filter, Boolean includeAllowableActions,
+			IncludeRelationships includeRelationships, String renditionFilter,
+			Boolean includePolicyIds, Boolean includeAcl,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"getObjectOfLatestVersion is not supported!");
+	}
+
+	@Override
+	public List<ObjectData> getAllVersions(String repositoryId,
+			String objectId, String versionSeriesId, String filter,
+			Boolean includeAllowableActions, ExtensionsData extension) {
+		throw new CmisNotSupportedException("getAllVersions is not supported!");
+	}
+
+	@Override
+	public ObjectList getContentChanges(String repositoryId,
+			Holder<String> changeLogToken, Boolean includeProperties,
+			String filter, Boolean includePolicyIds, Boolean includeAcl,
+			BigInteger maxItems, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"getContentChanges is not supported!");
+	}
+
+	@Override
+	public ObjectList query(String repositoryId, String statement,
+			Boolean searchAllVersions, Boolean includeAllowableActions,
+			IncludeRelationships includeRelationships, String renditionFilter,
+			BigInteger maxItems, BigInteger skipCount, ExtensionsData extension) {
+		throw new CmisNotSupportedException("query is not supported!");
+	}
+
+	@Override
+	public void addObjectToFolder(String repositoryId, String objectId,
+			String folderId, Boolean allVersions, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"addObjectToFolder is not supported!");
+	}
+
+	@Override
+	public void removeObjectFromFolder(String repositoryId, String objectId,
+			String folderId, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"removeObjectFromFolder is not supported!");
+	}
+
+	@Override
+	public ObjectList getObjectRelationships(String repositoryId,
+			String objectId, Boolean includeSubRelationshipTypes,
+			RelationshipDirection relationshipDirection, String typeId,
+			String filter, Boolean includeAllowableActions,
+			BigInteger maxItems, BigInteger skipCount, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"getObjectRelationships is not supported!");
+	}
+
+	@Override
+	public Acl applyAcl(String repositoryId, String objectId, Acl addAces,
+			Acl removeAces, AclPropagation aclPropagation,
+			ExtensionsData extension) {
+		throw new CmisNotSupportedException("applyAcl is not supported!");
+	}
+
+	@Override
+	public Acl applyAcl(String repositoryId, String objectId, Acl aces,
+			AclPropagation aclPropagation) {
+		throw new CmisNotSupportedException("applyAcl is not supported!");
+	}
+
+	@Override
+	public Acl getAcl(String repositoryId, String objectId,
+			Boolean onlyBasicPermissions, ExtensionsData extension) {
+		throw new CmisNotSupportedException("getAcl is not supported!");
+	}
+
+	@Override
+	public void applyPolicy(String repositoryId, String policyId,
+			String objectId, ExtensionsData extension) {
+		throw new CmisNotSupportedException("applyPolicy is not supported!");
+	}
+
+	@Override
+	public List<ObjectData> getAppliedPolicies(String repositoryId,
+			String objectId, String filter, ExtensionsData extension) {
+		throw new CmisNotSupportedException(
+				"getAppliedPolicies is not supported!");
+	}
+
+	@Override
+	public void removePolicy(String repositoryId, String policyId,
+			String objectId, ExtensionsData extension) {
+		throw new CmisNotSupportedException("removePolicy is not supported!");
+	}
 }
