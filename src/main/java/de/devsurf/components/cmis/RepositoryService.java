@@ -1,4 +1,4 @@
-package com.saperion.components.cmis;
+package de.devsurf.components.cmis;
 
 import static com.saperion.components.cmis.helper.PropertiesFiller.addPropertyBigInteger;
 import static com.saperion.components.cmis.helper.PropertiesFiller.addPropertyBoolean;
@@ -17,6 +17,7 @@ import java.util.GregorianCalendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.StringTokenizer;
 
 import org.apache.chemistry.opencmis.commons.PropertyIds;
 import org.apache.chemistry.opencmis.commons.data.Acl;
@@ -359,7 +360,7 @@ public class RepositoryService extends AbstractCmisService {
 				// build and add child object
 				ObjectInFolderDataImpl objectInFolder = new ObjectInFolderDataImpl();
 				objectInFolder.setObject(compileObjectType(context,
-						includeAllowableActions, connector, documentInfo, this));
+						includeAllowableActions, "", connector, documentInfo, this));
 				
 				result.getObjects().add(objectInFolder);
 			}
@@ -389,6 +390,32 @@ public class RepositoryService extends AbstractCmisService {
 		// we have no parents in example v7 ;)
 		return Collections.emptyList();
 	}
+	
+
+	@Override
+	public ObjectData getObjectByPath(String repositoryId, String path,
+			String filter, Boolean includeAllowableActions,
+			IncludeRelationships includeRelationships, String renditionFilter,
+			Boolean includePolicyIds, Boolean includeAcl,
+			ExtensionsData extension) {
+        // check path
+        if ((path == null) || (!path.startsWith("/"))) {
+            throw new CmisInvalidArgumentException("Invalid folder path!");
+        }
+        
+        if(path.length() == 1) {
+        	return getRootFolder(this);
+        }
+
+        StringTokenizer tok = new StringTokenizer(path, "/");
+        if(!tok.hasMoreTokens()) {
+        	throw new CmisInvalidArgumentException("Couldn't find Id in path.");
+        }
+        
+        String id = tok.nextToken();
+
+        return getObject(repositoryId, id, filter, includeAllowableActions, includeRelationships, renditionFilter, includePolicyIds, includeAcl, extension);
+    }
 
 	@Override
 	public ObjectData getObject(String repositoryId, String objectId,
@@ -425,7 +452,7 @@ public class RepositoryService extends AbstractCmisService {
 						+ "] wasn't found.");
 			}
 			
-			return compileObjectType(context, includeAllowableActions, connector,
+			return compileObjectType(context, includeAllowableActions, "", connector,
 					result.get(0), this);
 		} catch (SaAuthenticationException e) {
 			e.printStackTrace();
@@ -568,12 +595,12 @@ public class RepositoryService extends AbstractCmisService {
 	 * @throws SaSystemException 
 	 */
 	private ObjectData compileObjectType(CallContext context,
-			boolean includeAllowableActions, SaClassicConnector connector,
+			boolean includeAllowableActions, String parent, SaClassicConnector connector,
 			SaDocumentInfo info, ObjectInfoHandler objectInfos) throws SaSystemException, SaAuthenticationException {
 		ObjectDataImpl result = new ObjectDataImpl();
 		ObjectInfoImpl objectInfo = new ObjectInfoImpl();
 
-		result.setProperties(compileProperties(connector, info, objectInfo));
+		result.setProperties(compileProperties(connector, info, parent, objectInfo));
 
 		if (includeAllowableActions) {
 			result.setAllowableActions(compileAllowableActions(false, false,
@@ -593,7 +620,7 @@ public class RepositoryService extends AbstractCmisService {
 	 * Gathers all base properties of a file or folder.
 	 */
 	private Properties compileProperties(SaClassicConnector connector,
-			SaDocumentInfo info, ObjectInfoImpl objectInfo) {
+			SaDocumentInfo info, String parent, ObjectInfoImpl objectInfo) {
 		if (info == null) {
 			throw new IllegalArgumentException("Item must not be null!");
 		}
@@ -844,15 +871,6 @@ public class RepositoryService extends AbstractCmisService {
 			String objectId, String renditionFilter, BigInteger maxItems,
 			BigInteger skipCount, ExtensionsData extension) {
 		throw new CmisNotSupportedException("getRenditions is not supported!");
-	}
-
-	@Override
-	public ObjectData getObjectByPath(String repositoryId, String path,
-			String filter, Boolean includeAllowableActions,
-			IncludeRelationships includeRelationships, String renditionFilter,
-			Boolean includePolicyIds, Boolean includeAcl,
-			ExtensionsData extension) {
-		throw new CmisNotSupportedException("getObjectByPath is not supported!");
 	}
 
 	@Override

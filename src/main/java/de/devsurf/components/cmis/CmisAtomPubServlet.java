@@ -1,4 +1,4 @@
-package com.saperion.components.cmis;
+package de.devsurf.components.cmis;
 
 import static org.apache.chemistry.opencmis.server.impl.atompub.AbstractAtomPubServiceCall.RESOURCE_ACL;
 import static org.apache.chemistry.opencmis.server.impl.atompub.AbstractAtomPubServiceCall.RESOURCE_ALLOWABLEACIONS;

@@ -1,4 +1,4 @@
-package com.saperion.components.cmis;
+package de.devsurf.components.cmis;
 
 import java.math.BigInteger;
 import java.util.Map;

@@ -1,1 +1,2 @@
 path is missing for document objects
+check if allowable actions is only called on getObject not on getObjects
